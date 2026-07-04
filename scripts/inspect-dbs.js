@@ -1,0 +1,32 @@
+const Database = require('better-sqlite3');
+const path = require('path');
+
+const dbs = ['similar.db', 'metadata.db'];
+
+for (const dbName of dbs) {
+  const dbPath = path.join(__dirname, '..', 'assets', 'db', dbName);
+  console.log(`\n============================`);
+  console.log(`Inspecting ${dbPath}...`);
+
+  try {
+    const db = new Database(dbPath, { readonly: true });
+    
+    // Get all tables
+    const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all();
+    console.log('\n--- TABLES ---');
+    tables.forEach(t => console.log(t.name));
+
+    for (const table of tables) {
+      console.log(`\n--- SCHEMA FOR ${table.name} ---`);
+      const schema = db.prepare(`PRAGMA table_info(${table.name})`).all();
+      console.log(schema.map(c => `${c.name} (${c.type})`).join(', '));
+      
+      const sample = db.prepare(`SELECT * FROM ${table.name} LIMIT 1`).get();
+      console.log('Sample row:', sample);
+    }
+
+    db.close();
+  } catch (err) {
+    console.error("Error reading database:", err.message);
+  }
+}
