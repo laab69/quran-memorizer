@@ -543,10 +543,8 @@ export async function setupDatabases() {
   // Build verses table with absolute sequential IDs (1 to 6236)
   try {
     const versesExist = quranDb.getFirstSync("SELECT name FROM sqlite_master WHERE type='table' AND name='verses'");
-    // Always force rebuild once to fix the synthetic ID bug from the previous version
-    const forceRebuild = true; 
-    
-    if (!versesExist || forceRebuild) {
+
+    if (!versesExist) {
       console.log("Building correct verses table with sequential IDs...");
       quranDb.execSync(`DROP TABLE IF EXISTS verses`);
       
@@ -695,6 +693,35 @@ export const getReviewCount = async (verseId) => {
 };
 
 // ═══════════════════════════════════════
+//  SPACED REPETITION (progress.db)
+// ═══════════════════════════════════════
+// Expanding review schedule: after the Nth review, a verse is "due" again
+// after this many days (indexed by review_count, capped at the last value).
+const REVIEW_INTERVAL_DAYS = [1, 2, 4, 7, 14, 30, 60];
+
+function isVerseOverdue(row) {
+  const anchor = row.last_reviewed || row.memorized_at;
+  if (!anchor) return false;
+  // SQLite datetime('now') is UTC 'YYYY-MM-DD HH:MM:SS'; normalize to ISO for Date parsing.
+  const anchorTime = new Date(anchor.replace(' ', 'T') + 'Z').getTime();
+  if (isNaN(anchorTime)) return false;
+  const days = REVIEW_INTERVAL_DAYS[Math.min(row.review_count, REVIEW_INTERVAL_DAYS.length - 1)];
+  return Date.now() >= anchorTime + days * 86400000;
+}
+
+export const getOverdueVerseIds = async () => {
+  try {
+    const rows = await progressDb.getAllAsync(
+      'SELECT verse_id, review_count, memorized_at, last_reviewed FROM memorized_verses'
+    );
+    return rows.filter(isVerseOverdue).map(r => r.verse_id);
+  } catch (e) {
+    console.warn('getOverdueVerseIds error:', e);
+    return [];
+  }
+};
+
+// ═══════════════════════════════════════
 //  QURAN QUERIES (quran.db & metadata.db)
 // ═══════════════════════════════════════
 
@@ -754,13 +781,63 @@ export const getRandomAyahFromRange = async (verseIds, ranges = []) => {
     const whereString = whereClauses.join(' OR ');
 
     const verse = await quranDb.getFirstAsync(
-      `SELECT id, verse_key, verse_number, text_uthmani, chapter_id 
+      `SELECT id, verse_key, verse_number, text_uthmani, chapter_id
        FROM verses WHERE ${whereString} ORDER BY RANDOM() LIMIT 1`,
       params
     );
     return attachChapterInfo(verse);
   } catch (e) {
     console.warn("getRandomAyahFromRange error:", e);
+    return null;
+  }
+};
+
+// Same candidate pool as getRandomAyahFromRange, but biased toward verses that
+// are overdue for review (per getOverdueVerseIds) most of the time, falling
+// back to a plain random pick to keep sessions varied and surface new verses.
+export const getSpacedRepetitionAyah = async (verseIds, ranges = []) => {
+  if ((!verseIds || verseIds.length === 0) && (!ranges || ranges.length === 0)) return null;
+  try {
+    let whereClauses = [];
+    let params = [];
+
+    if (verseIds && verseIds.length > 0) {
+      whereClauses.push(`id IN (${verseIds.map(() => '?').join(',')})`);
+      params.push(...verseIds);
+    }
+
+    if (ranges && ranges.length > 0) {
+      ranges.forEach(r => {
+        whereClauses.push(`(id BETWEEN ? AND ?)`);
+        params.push(r.start, r.end);
+      });
+    }
+
+    const whereString = whereClauses.join(' OR ');
+
+    const overdueIds = await getOverdueVerseIds();
+    let verse = null;
+
+    if (overdueIds.length > 0 && Math.random() < 0.65) {
+      const placeholders = overdueIds.map(() => '?').join(',');
+      verse = await quranDb.getFirstAsync(
+        `SELECT id, verse_key, verse_number, text_uthmani, chapter_id
+         FROM verses WHERE (${whereString}) AND id IN (${placeholders})
+         ORDER BY RANDOM() LIMIT 1`,
+        [...params, ...overdueIds]
+      );
+    }
+
+    if (!verse) {
+      verse = await quranDb.getFirstAsync(
+        `SELECT id, verse_key, verse_number, text_uthmani, chapter_id
+         FROM verses WHERE ${whereString} ORDER BY RANDOM() LIMIT 1`,
+        params
+      );
+    }
+    return attachChapterInfo(verse);
+  } catch (e) {
+    console.warn("getSpacedRepetitionAyah error:", e);
     return null;
   }
 };

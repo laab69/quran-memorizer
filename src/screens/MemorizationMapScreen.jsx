@@ -117,9 +117,16 @@ const toggleExpand = async () => {
         <View style={sStyles.info}>
           <View style={sStyles.nameRow}>
             {glyph ? (
-              <Text style={{ fontFamily: 'SurahNames', fontSize: 32, color: theme.white, textAlign: 'right', includeFontPadding: false }}>{glyph}</Text>
+              <Text
+                style={{ fontFamily: 'SurahNames', fontSize: 32, color: theme.white, textAlign: 'right', includeFontPadding: false, flexShrink: 1 }}
+                numberOfLines={1}
+                adjustsFontSizeToFit
+                minimumFontScale={0.5}
+              >
+                {glyph}
+              </Text>
             ) : (
-              <Text style={sStyles.name}>{surah.name_arabic}</Text>
+              <Text style={sStyles.name} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.6}>{surah.name_arabic}</Text>
             )}
           </View>
         </View>
@@ -168,11 +175,11 @@ export default function MemorizationMapScreen({ navigation }) {
         <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn}>
           <Text style={styles.backText}>{"\u2039"}</Text>
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>خريطة الحفظ</Text>
+        <Text style={styles.headerTitle} numberOfLines={1}>خريطة الحفظ</Text>
       </View>
       <View style={styles.globalSection}>
         <MemorizationBar memorizedIds={Array.from(store.memorizedSet)} />
-        <Text style={styles.globalCount}>{store.memorizedSet.size} من ٦٢٣٦ آية محفوظة</Text>
+        <Text style={styles.globalCount} numberOfLines={1}>{store.memorizedSet.size} من ٦٢٣٦ آية محفوظة</Text>
       </View>
       <View style={styles.list}>
         <FlashList

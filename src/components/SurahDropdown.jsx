@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import Animated, {
   useAnimatedStyle,
@@ -24,7 +24,7 @@ function countMemorizedInRange(set, first, last) {
   return count;
 }
 
-export default function SurahDropdown({ surah, mode, selectedVerseIds, onVerseSelect, onSurahSelect }) {
+function SurahDropdown({ surah, mode, range: rangeProp, selectedVerseIds, onVerseSelect, onSurahSelect }) {
   const { store } = useAppStore();
   const [expanded, setExpanded] = useState(false);
   const [verses, setVerses] = useState([]);
@@ -86,7 +86,7 @@ const renderVerseItem = useCallback(({ item: v }) => {
     if (mode === 'random') onSurahSelect(surah.id);
   };
 
-  const range = store.surahRanges[surah.id] || { first: 1, last: 1, count: 1 };
+  const range = rangeProp || store.surahRanges[surah.id] || { first: 1, last: 1, count: 1 };
   const totalVerses = range.count || 1;
   const memCount = countMemorizedInRange(store.memorizedSet, range.first, range.last);
   const progressPercent = Math.min((memCount / totalVerses) * 100, 100);
@@ -107,15 +107,25 @@ const allSelected = mode === 'random' && selectedVerseIds.size > 0 &&
         <TouchableOpacity style={styles.surahInfo} onPress={handleSurahPress}>
           <View style={styles.surahTextCol}>
             {glyph ? (
-              <Text style={{ fontFamily: 'SurahNames', fontSize: 32, color: theme.white, textAlign: 'right', includeFontPadding: false }}>
+              <Text
+                style={{ fontFamily: 'SurahNames', fontSize: 32, color: theme.white, textAlign: 'right', includeFontPadding: false, flexShrink: 1 }}
+                numberOfLines={1}
+                adjustsFontSizeToFit
+                minimumFontScale={0.5}
+              >
                 {glyph}
               </Text>
             ) : (
-              <Text style={{ fontFamily: 'Amiri', fontSize: 22, color: theme.white, textAlign: 'right' }}>
+              <Text
+                style={{ fontFamily: 'Amiri', fontSize: 22, color: theme.white, textAlign: 'right', flexShrink: 1 }}
+                numberOfLines={1}
+                adjustsFontSizeToFit
+                minimumFontScale={0.6}
+              >
                 {surah.name_arabic}
               </Text>
             )}
-            <Text style={styles.verseCount}>{surah.verses_count} آيات</Text>
+            <Text style={styles.verseCount} numberOfLines={1}>{surah.verses_count} آيات</Text>
           </View>
           <View style={styles.numBadge}>
             <Text style={styles.surahNumber}>{surah.id}</Text>
@@ -165,6 +175,28 @@ const allSelected = mode === 'random' && selectedVerseIds.size > 0 &&
   );
 }
 
+// selectedVerseIds is the same Set instance mutated-in-place upstream in some
+// callers, so a plain reference check isn't enough to know whether THIS row's
+// verses changed. Scope the diff to this surah's own verse range instead of
+// re-rendering every visible row on every tap.
+const areSurahDropdownPropsEqual = (prevProps, nextProps) => {
+  if (prevProps.surah.id !== nextProps.surah.id) return false;
+  if (prevProps.mode !== nextProps.mode) return false;
+  if (prevProps.onVerseSelect !== nextProps.onVerseSelect) return false;
+  if (prevProps.onSurahSelect !== nextProps.onSurahSelect) return false;
+  if (prevProps.selectedVerseIds === nextProps.selectedVerseIds) return true;
+
+  const range = nextProps.range || prevProps.range;
+  if (!range) return false;
+
+  for (let i = range.first; i <= range.last; i++) {
+    if (prevProps.selectedVerseIds.has(i) !== nextProps.selectedVerseIds.has(i)) return false;
+  }
+  return true;
+};
+
+export default React.memo(SurahDropdown, areSurahDropdownPropsEqual);
+
 const styles = StyleSheet.create({
   container: {
     backgroundColor: theme.backgroundCard,
@@ -183,7 +215,7 @@ const styles = StyleSheet.create({
   chevronText: { color: theme.primary, fontSize: 22 },
   miniBar: { width: 60, height: 4, backgroundColor: theme.cardBorder, borderRadius: 2, marginHorizontal: 12 },
   surahInfo: { flex: 1, flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center' },
-  surahTextCol: { alignItems: 'flex-end', marginRight: 12 },
+  surahTextCol: { alignItems: 'flex-end', marginRight: 12, flexShrink: 1 },
   verseCount: { color: theme.grey, fontSize: 11, marginTop: 2 },
   numBadge: { width: 34, height: 34, borderRadius: 17, backgroundColor: 'rgba(201,168,76,0.1)', borderWidth: 1, borderColor: 'rgba(201,168,76,0.3)', justifyContent: 'center', alignItems: 'center', marginLeft: 8 },
   surahNumber: { color: theme.primary, fontSize: 13, fontWeight: 'bold' },

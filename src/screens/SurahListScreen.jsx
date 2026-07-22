@@ -71,7 +71,7 @@ function HizbRow({ hizb, selectedRanges, onRangeSelect }) {
         <TouchableOpacity style={styles.chevronBtn} onPress={toggleExpand}>
           <Animated.Text style={[styles.chevronText, chevronStyle]}>›</Animated.Text>
         </TouchableOpacity>
-        <Text style={styles.hizbTitle}>الحزب {hizb.id}</Text>
+        <Text style={styles.hizbTitle} numberOfLines={1}>الحزب {hizb.id}</Text>
       </View>
       <View style={{ height: 3, backgroundColor: theme.cardBorder, width: '100%' }}>
         <View style={{ height: '100%', backgroundColor: theme.primary, width: `${progressPercent}%` }} />
@@ -89,7 +89,7 @@ function HizbRow({ hizb, selectedRanges, onRangeSelect }) {
                   style={[styles.rubuRow, isSelected && styles.rubuRowSelected]}
                   onPress={() => onRangeSelect({ start: rubu.first_verse_id, end: rubu.last_verse_id })}
                 >
-                  <Text style={[styles.rubuLabel, isSelected && styles.rubuLabelSelected]}>{getLabel(index)}</Text>
+                  <Text style={[styles.rubuLabel, isSelected && styles.rubuLabelSelected]} numberOfLines={1}>{getLabel(index)}</Text>
                   {rubu.text_uthmani && (
                     <Text style={[styles.rubuText, isSelected && styles.rubuTextSelected]} numberOfLines={1}>
                       {rubu.text_uthmani.split(' ').slice(0, 5).join(' ')} {'...'}
@@ -129,8 +129,7 @@ export default function SurahListScreen({ route, navigation }) {
   const { mode } = route.params || { mode: 'random' };
   const [activeTab, setActiveTab] = useState('surahs');
   const [hizbs, setHizbs] = useState([]);
-  const [selectionVersion, setSelectionVersion] = useState(0);
-  const selectedVerseIdsRef = useRef(new Set());
+  const [selectedVerseIds, setSelectedVerseIds] = useState(() => new Set());
   const [selectedRanges, setSelectedRanges] = useState([]);
   const tabUnderlineX = useSharedValue(0);
 
@@ -154,22 +153,28 @@ export default function SurahListScreen({ route, navigation }) {
       navigation.navigate('AyahScreen', { mode: 'choose', verseId });
       return;
     }
-    const s = selectedVerseIdsRef.current;
-    if (s.has(verseId)) s.delete(verseId);
-    else s.add(verseId);
-    setSelectionVersion(v => v + 1);
+    setSelectedVerseIds(prev => {
+      const next = new Set(prev);
+      if (next.has(verseId)) next.delete(verseId); else next.add(verseId);
+      return next;
+    });
   }, [mode, navigation]);
 
   const handleSurahSelect = useCallback((surahId) => {
     if (mode !== 'random') return;
     const range = store.surahRanges[surahId];
     if (!range) return;
-    const s = selectedVerseIdsRef.current;
-    const allSelected = Array.from({ length: range.last - range.first + 1 }, (_, i) => range.first + i).every(id => s.has(id));
-    for (let i = range.first; i <= range.last; i++) {
-      if (allSelected) s.delete(i); else s.add(i);
-    }
-    setSelectionVersion(v => v + 1);
+    setSelectedVerseIds(prev => {
+      let allSelected = true;
+      for (let i = range.first; i <= range.last; i++) {
+        if (!prev.has(i)) { allSelected = false; break; }
+      }
+      const next = new Set(prev);
+      for (let i = range.first; i <= range.last; i++) {
+        if (allSelected) next.delete(i); else next.add(i);
+      }
+      return next;
+    });
   }, [mode, store.surahRanges]);
 
   const handleRangeSelect = useCallback((range) => {
@@ -181,13 +186,13 @@ export default function SurahListScreen({ route, navigation }) {
   }, []);
 
   const startRandomSession = async () => {
-    const selectedVerseIds = Array.from(selectedVerseIdsRef.current);
-    if (selectedVerseIds.length === 0 && selectedRanges.length === 0) return;
+    const selectedVerseIdsArr = Array.from(selectedVerseIds);
+    if (selectedVerseIdsArr.length === 0 && selectedRanges.length === 0) return;
 
     let minId = Infinity;
     let maxId = -Infinity;
 
-    selectedVerseIds.forEach(id => {
+    selectedVerseIdsArr.forEach(id => {
       if (id < minId) minId = id;
       if (id > maxId) maxId = id;
     });
@@ -203,7 +208,7 @@ export default function SurahListScreen({ route, navigation }) {
         await saveSession(minId, maxId, rubus);
         navigation.navigate('LevelMap');
       } else {
-        navigation.navigate('AyahScreen', { mode: 'random', selectedVerseIds, selectedRanges });
+        navigation.navigate('AyahScreen', { mode: 'random', selectedVerseIds: selectedVerseIdsArr, selectedRanges });
       }
     }
   };
@@ -225,9 +230,9 @@ export default function SurahListScreen({ route, navigation }) {
               <Text style={styles.resumeSubtitle}>
                 لديك تحدي مستويات نشط حالياً للآيات من {activeSession.levels_data[0]?.first_verse_key} إلى {activeSession.levels_data[activeSession.levels_data.length - 1]?.last_verse_key}
               </Text>
-              
+
               <View style={styles.resumeProgressWrapper}>
-                <Text style={styles.resumeProgressText}>
+                <Text style={styles.resumeProgressText} numberOfLines={1}>
                   المكتمل: {activeSession.completed_level_indices.length} من {activeSession.levels_data.length} مستوى
                 </Text>
                 <View style={styles.resumeProgressBarBg}>
@@ -251,9 +256,8 @@ export default function SurahListScreen({ route, navigation }) {
                 style={styles.startNewBtn}
                 onPress={async () => {
                   await clearSession();
-                  selectedVerseIdsRef.current.clear();
+                  setSelectedVerseIds(new Set());
                   setSelectedRanges([]);
-                  setSelectionVersion(v => v + 1);
                 }}
               >
                 <Text style={styles.startNewBtnText}>بدء تحدي جديد</Text>
@@ -265,10 +269,10 @@ export default function SurahListScreen({ route, navigation }) {
             {mode === 'random' && (
               <View style={styles.tabContainer}>
                 <TouchableOpacity style={styles.tab} onPress={() => switchTab('surahs')}>
-                  <Text style={[styles.tabText, activeTab === 'surahs' && styles.tabTextActive]}>السور</Text>
+                  <Text style={[styles.tabText, activeTab === 'surahs' && styles.tabTextActive]} numberOfLines={1}>السور</Text>
                 </TouchableOpacity>
                 <TouchableOpacity style={styles.tab} onPress={() => switchTab('hizbs')}>
-                  <Text style={[styles.tabText, activeTab === 'hizbs' && styles.tabTextActive]}>الأحزاب</Text>
+                  <Text style={[styles.tabText, activeTab === 'hizbs' && styles.tabTextActive]} numberOfLines={1}>الأحزاب</Text>
                 </TouchableOpacity>
                 <Animated.View style={[styles.tabUnderline, underlineStyle]} />
               </View>
@@ -278,14 +282,15 @@ export default function SurahListScreen({ route, navigation }) {
               {activeTab === 'surahs' || mode === 'choose' ? (
                 <FlashList
                   data={store.chapters}
-                  extraData={selectionVersion}
+                  extraData={selectedVerseIds}
                   estimatedItemSize={80}
                   keyExtractor={(item) => item.id.toString()}
                   contentContainerStyle={{ paddingBottom: 100 }}
                   renderItem={({ item: surah }) => (
                     <SurahDropdown
                       surah={surah} mode={mode}
-                      selectedVerseIds={selectedVerseIdsRef.current}
+                      range={store.surahRanges[surah.id]}
+                      selectedVerseIds={selectedVerseIds}
                       onVerseSelect={handleVerseSelect}
                       onSurahSelect={handleSurahSelect}
                     />
@@ -312,14 +317,14 @@ export default function SurahListScreen({ route, navigation }) {
             {mode === 'random' && (
               <View style={styles.bottomBar}>
                 <TouchableOpacity
-                  style={[styles.startBtn, (selectedVerseIdsRef.current.size === 0 && selectedRanges.length === 0) && styles.startBtnDisabled]}
+                  style={[styles.startBtn, (selectedVerseIds.size === 0 && selectedRanges.length === 0) && styles.startBtnDisabled]}
                   onPress={startRandomSession}
-                  disabled={selectedVerseIdsRef.current.size === 0 && selectedRanges.length === 0}
+                  disabled={selectedVerseIds.size === 0 && selectedRanges.length === 0}
                 >
                   <Text style={styles.startBtnText}>ابدأ</Text>
                 </TouchableOpacity>
-                <Text style={styles.selectionText}>
-                  {selectedVerseIdsRef.current.size > 0 ? `${selectedVerseIdsRef.current.size} آية ` : ''}
+                <Text style={styles.selectionText} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>
+                  {selectedVerseIds.size > 0 ? `${selectedVerseIds.size} آية ` : ''}
                   {selectedRanges.length > 0 ? `${selectedRanges.length} ربع` : ''}
                 </Text>
               </View>
@@ -380,7 +385,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20, paddingVertical: 20,
     borderTopWidth: 1, borderTopColor: theme.cardBorder,
   },
-  selectionText: { color: theme.primary, fontSize: 15 },
+  selectionText: { color: theme.primary, fontSize: 15, flexShrink: 1, marginLeft: 12 },
   startBtn: {
     backgroundColor: theme.primary, paddingHorizontal: 32, paddingVertical: 12, borderRadius: 10,
   },

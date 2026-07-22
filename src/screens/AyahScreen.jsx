@@ -1,4 +1,4 @@
-import { FlashList } from '@shopify/flash-list';
+import { Audio } from 'expo-av';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useEffect, useState, useRef } from 'react';
 import {
@@ -19,16 +19,17 @@ import Animated, {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import BlurredAyah from '../components/BlurredAyah';
 import StrengthMeter from '../components/StrengthMeter';
+import { getAyahAudioUrl } from '../audio/recitation';
 import { getAyahKeysForPhrase, getPhrasesForAyah } from '../db/mutashabihat';
 import {
   getAyahById,
   getFullAyahsByKeys,
   getNextAyah, getPrevAyah,
-  getRandomAyahFromRange,
+  getOverdueVerseIds,
   getReviewCount,
   getSimilarAyahs,
+  getSpacedRepetitionAyah,
   incrementReviewCount,
-  markAsMemorized, markAsNotMemorized,
   searchVersesByPhrase
 } from '../db/queries';
 import { getSurahNameGlyph } from '../srs/utils/fontUtils';
@@ -40,31 +41,30 @@ const END_OF_AYAH = String.fromCodePoint(0x06DD);
 
 // ============ Modal Content Components ============
 
+// Note: these lists render inside a modal's outer ScrollView (scrollEnabled={false}
+// on the list itself), so FlashList/FlatList virtualization has no viewport to work
+// with anyway -- a plain map avoids that overhead entirely.
+
 function SimilarAyahsContent({ data, dividerStyle }) {
   return (
-    <FlashList
-      data={data}
-      renderItem={({ item, index }) => (
-        <View>
+    <View>
+      {data.map((item, index) => (
+        <View key={item.id.toString()}>
           <BlurredAyah ayah={item} />
           {index < data.length - 1 && <View style={dividerStyle} />}
         </View>
-      )}
-      keyExtractor={(item) => item.id.toString()}
-      estimatedItemSize={200}
-      scrollEnabled={false}
-    />
+      ))}
+    </View>
   );
 }
 
 function SimilarPhrasesContent({ data, phraseColors, onPhraseSelect, phraseCardStyle, phraseCardTextStyle, phraseCardStatsStyle, phraseCardBtnStyle, phraseCardBtnTextStyle }) {
   return (
-    <FlashList
-      data={data}
-      renderItem={({ item, index }) => {
+    <View>
+      {data.map((item, index) => {
         const color = phraseColors[index % phraseColors.length];
         return (
-          <View style={[phraseCardStyle, { borderLeftColor: color, borderLeftWidth: 4 }]}>
+          <View key={item.id.toString()} style={[phraseCardStyle, { borderLeftColor: color, borderLeftWidth: 4 }]}>
             <Text style={[phraseCardTextStyle, { color }]}>{item.text}</Text>
             <Text style={phraseCardStatsStyle}>وردت {item.count} مرات في {item.surahs} سورة</Text>
             <TouchableOpacity style={phraseCardBtnStyle} onPress={() => onPhraseSelect(item.id)}>
@@ -72,11 +72,8 @@ function SimilarPhrasesContent({ data, phraseColors, onPhraseSelect, phraseCardS
             </TouchableOpacity>
           </View>
         );
-      }}
-      keyExtractor={(item) => item.id.toString()}
-      estimatedItemSize={150}
-      scrollEnabled={false}
-    />
+      })}
+    </View>
   );
 }
 
@@ -84,18 +81,12 @@ function PhraseAyahsContent({ data, dividerStyle, headerText, headerStyle }) {
   return (
     <View>
       <Text style={headerStyle}>{headerText}</Text>
-      <FlashList
-        data={data}
-        renderItem={({ item, index }) => (
-          <View>
-            <BlurredAyah ayah={item} />
-            {index < data.length - 1 && <View style={dividerStyle} />}
-          </View>
-        )}
-        keyExtractor={(item) => item.id.toString()}
-        estimatedItemSize={200}
-        scrollEnabled={false}
-      />
+      {data.map((item, index) => (
+        <View key={item.id.toString()}>
+          <BlurredAyah ayah={item} />
+          {index < data.length - 1 && <View style={dividerStyle} />}
+        </View>
+      ))}
     </View>
   );
 }
@@ -106,18 +97,12 @@ function SimilarAyahsWithBackContent({ data, dividerStyle, onBack, backBtnStyle,
       <TouchableOpacity style={backBtnStyle} onPress={onBack}>
         <Text style={backBtnTextStyle}>← رجوع للمقاطع</Text>
       </TouchableOpacity>
-      <FlashList
-        data={data}
-        renderItem={({ item, index }) => (
-          <View>
-            <BlurredAyah ayah={item} />
-            {index < data.length - 1 && <View style={dividerStyle} />}
-          </View>
-        )}
-        keyExtractor={(item) => item.id.toString()}
-        estimatedItemSize={200}
-        scrollEnabled={false}
-      />
+      {data.map((item, index) => (
+        <View key={item.id.toString()}>
+          <BlurredAyah ayah={item} />
+          {index < data.length - 1 && <View style={dividerStyle} />}
+        </View>
+      ))}
     </View>
   );
 }
@@ -129,7 +114,7 @@ function toArabicDigits(num) {
 }
 
 export default function AyahScreen({ route, navigation }) {
-  const { store, activeSession, updateSessionProgress } = useAppStore();
+  const { store, activeSession, updateSessionProgress, toggleMemorized } = useAppStore();
   const { mode, selectedVerseIds, selectedRanges, verseId } = route.params || {};
   const [currentAyah, setCurrentAyah] = useState(null);
   const [ayahPhrases, setAyahPhrases] = useState([]);
@@ -142,6 +127,8 @@ export default function AyahScreen({ route, navigation }) {
   const floatingBarOpacity = useSharedValue(0);
   const [memorized, setMemorized] = useState(false);
   const [reviewCount, setReviewCount] = useState(0);
+  const [audioState, setAudioState] = useState('idle'); // idle | loading | playing | error
+  const soundRef = useRef(null);
   const cardOpacity = useSharedValue(1);
   const refreshSpin = useSharedValue(0);
 
@@ -169,7 +156,59 @@ export default function AyahScreen({ route, navigation }) {
     floatingBarOpacity.value = withTiming(selectedText.length > 0 ? 1 : 0, { duration: 200 });
   }, [selectedText]);
 
+  // Stop any in-flight recitation when leaving the screen
+  useEffect(() => {
+    return () => {
+      if (soundRef.current) soundRef.current.unloadAsync();
+    };
+  }, []);
+
+  const stopAyahAudio = async () => {
+    const sound = soundRef.current;
+    soundRef.current = null;
+    setAudioState('idle');
+    if (sound) {
+      try {
+        await sound.stopAsync();
+        await sound.unloadAsync();
+      } catch (e) {
+        // already unloaded/stopped, ignore
+      }
+    }
+  };
+
+  const playAyahAudio = async () => {
+    if (!currentAyah) return;
+    if (audioState === 'playing' || audioState === 'loading') {
+      await stopAyahAudio();
+      return;
+    }
+    setAudioState('loading');
+    try {
+      await Audio.setAudioModeAsync({ playsInSilentModeIOS: true });
+      const url = getAyahAudioUrl(currentAyah.surah_number, currentAyah.verse_number);
+      const { sound } = await Audio.Sound.createAsync({ uri: url }, { shouldPlay: true });
+      soundRef.current = sound;
+      setAudioState('playing');
+      sound.setOnPlaybackStatusUpdate((status) => {
+        if (status.didJustFinish || status.error) {
+          sound.unloadAsync();
+          if (soundRef.current === sound) {
+            soundRef.current = null;
+            setAudioState('idle');
+          }
+        }
+      });
+    } catch (e) {
+      console.warn('playAyahAudio error:', e);
+      soundRef.current = null;
+      setAudioState('error');
+      setTimeout(() => setAudioState('idle'), 2000);
+    }
+  };
+
   const loadAyah = async () => {
+    await stopAyahAudio();
     cardOpacity.value = withTiming(0, { duration: 200 });
     setLoading(true);
     setSelectedText('');
@@ -183,14 +222,21 @@ export default function AyahScreen({ route, navigation }) {
         setLoading(false);
         return;
       }
-      const randomIndex = Math.floor(Math.random() * remaining.length);
-      const chosenId = remaining[randomIndex];
+      // Spaced repetition: within this level's remaining verses, bias toward
+      // ones overdue for review so weak spots surface earlier in the session
+      // (the level still isn't "complete" until every verse has been shown once).
+      const overdueIds = await getOverdueVerseIds();
+      const overdueInRemaining = remaining.filter(id => overdueIds.includes(id));
+      const pickFrom = overdueInRemaining.length > 0 && Math.random() < 0.7
+        ? overdueInRemaining
+        : remaining;
+      const chosenId = pickFrom[Math.floor(Math.random() * pickFrom.length)];
       remainingIdsRef.current = remaining.filter(id => id !== chosenId);
       setProgressCount(totalVersesInLevel - remainingIdsRef.current.length);
-      
+
       ayah = await getAyahById(chosenId);
     } else if (mode === 'random') {
-      ayah = await getRandomAyahFromRange(selectedVerseIds, selectedRanges);
+      ayah = await getSpacedRepetitionAyah(selectedVerseIds, selectedRanges);
     } else {
       ayah = await getAyahById(verseId);
     }
@@ -226,14 +272,11 @@ export default function AyahScreen({ route, navigation }) {
   const handleToggleMemorized = async (value) => {
     if (!currentAyah) return;
     setMemorized(value);
+    await toggleMemorized(currentAyah.id, currentAyah.verse_key, value);
     if (value) {
-      await markAsMemorized(currentAyah.id, currentAyah.verse_key);
-      store.memorizedSet.add(currentAyah.id);
       const count = await getReviewCount(currentAyah.id);
       setReviewCount(count);
     } else {
-      await markAsNotMemorized(currentAyah.id);
-      store.memorizedSet.delete(currentAyah.id);
       setReviewCount(0);
     }
   };
@@ -339,22 +382,30 @@ export default function AyahScreen({ route, navigation }) {
           </TouchableOpacity>
           {route.params?.mode === 'level' && (
             <View style={styles.levelHeaderProgress}>
-              <Text style={styles.levelHeaderText}>
+              <Text style={styles.levelHeaderText} numberOfLines={1}>
                 {toArabicDigits(progressCount)} / {toArabicDigits(totalVersesInLevel)} آية
               </Text>
             </View>
           )}
           {currentAyah ? (
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-              <Text style={{ fontFamily: 'Amiri', color: theme.primary, fontSize: 28, includeFontPadding: false }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexShrink: 1 }}>
+              <Text
+                style={{ fontFamily: 'Amiri', color: theme.primary, fontSize: 28, includeFontPadding: false }}
+                numberOfLines={1}
+              >
                 {END_OF_AYAH + toArabicDigits(currentAyah.verse_key.split(':')[1])}
               </Text>
               {getSurahNameGlyph(currentAyah.surah_number) ? (
-                <Text style={{ fontFamily: 'SurahNames', fontSize: 40, color: theme.primary, includeFontPadding: false }}>
+                <Text
+                  style={{ fontFamily: 'SurahNames', fontSize: 40, color: theme.primary, includeFontPadding: false, flexShrink: 1 }}
+                  numberOfLines={1}
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.5}
+                >
                   {getSurahNameGlyph(currentAyah.surah_number)}
                 </Text>
               ) : (
-                <Text style={styles.headerTitle}>{currentAyah.surah_name_arabic}</Text>
+                <Text style={styles.headerTitle} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.6}>{currentAyah.surah_name_arabic}</Text>
               )}
             </View>
           ) : null}
@@ -367,11 +418,24 @@ export default function AyahScreen({ route, navigation }) {
             <Animated.View style={cardStyle}>
               <TouchableOpacity activeOpacity={1} onPress={handleOutsideTap}>
                 <LinearGradient colors={['#10101e', '#0d0d1a']} style={styles.ayahCard}>
+                  <TouchableOpacity
+                    style={[styles.audioBtn, audioState === 'playing' && styles.audioBtnPlaying]}
+                    onPress={playAyahAudio}
+                    activeOpacity={0.8}
+                  >
+                    {audioState === 'loading' ? (
+                      <ActivityIndicator size="small" color={theme.primary} />
+                    ) : (
+                      <Text style={styles.audioIcon}>
+                        {audioState === 'playing' ? '⏸' : audioState === 'error' ? '⚠' : '▶'}
+                      </Text>
+                    )}
+                  </TouchableOpacity>
                   {selectedText.length > 0 && (
                     <Animated.View style={[styles.floatingBar, floatingStyle]}>
-                      <Text style={styles.floatingBarPrefix}>ابحث عن: {selectedText}</Text>
+                      <Text style={styles.floatingBarPrefix} numberOfLines={1} ellipsizeMode="tail">ابحث عن: {selectedText}</Text>
                       <TouchableOpacity style={styles.floatingBarBtn} onPress={openPhraseSearch}>
-                        <Text style={styles.floatingBarText}>عرض المتشابه</Text>
+                        <Text style={styles.floatingBarText} numberOfLines={1}>عرض المتشابه</Text>
                       </TouchableOpacity>
                       <TouchableOpacity onPress={() => setSelectedText('')}>
                         <Text style={styles.floatingBarDismiss}>✕</Text>
@@ -399,16 +463,16 @@ export default function AyahScreen({ route, navigation }) {
                   </View>
                   <View style={styles.verseKeyRow}>
                     {getSurahNameGlyph(currentAyah.surah_number) ? (
-                      <Text style={styles.surahNameGlyph}>
+                      <Text style={styles.surahNameGlyph} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.5}>
                         {getSurahNameGlyph(currentAyah.surah_number)}
                       </Text>
                     ) : (
-                      <Text style={styles.surahNameFallback}>
+                      <Text style={styles.surahNameFallback} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.6}>
                         {currentAyah.surah_name_arabic}
                       </Text>
                     )}
                   </View>
-                  <Text style={styles.translation}>{currentAyah.translation}</Text>
+                  <Text style={styles.translation} numberOfLines={4}>{currentAyah.translation}</Text>
                   <View style={styles.memSection}>
                     <TouchableOpacity
                       onPress={() => handleToggleMemorized(!memorized)}
@@ -471,12 +535,12 @@ export default function AyahScreen({ route, navigation }) {
               {(route.params?.mode === 'level' && progressCount === totalVersesInLevel) ? (
                 <>
                   <Text style={styles.completeLevelIcon}>🎉</Text>
-                  <Text style={[styles.anotherBtnText, styles.completeLevelBtnText]}>إنهاء المستوى</Text>
+                  <Text style={[styles.anotherBtnText, styles.completeLevelBtnText]} numberOfLines={1}>إنهاء المستوى</Text>
                 </>
               ) : (
                 <>
                   <Animated.Text style={[styles.anotherIcon, spinStyle]}>↺</Animated.Text>
-                  <Text style={styles.anotherBtnText}>آية أخرى</Text>
+                  <Text style={styles.anotherBtnText} numberOfLines={1}>آية أخرى</Text>
                 </>
               )}
             </TouchableOpacity>
@@ -573,7 +637,7 @@ function ActionButton({ label, onPress, isLast }) {
   return (
     <TouchableOpacity onPress={onPress} onPressIn={handleIn} onPressOut={handleOut} activeOpacity={1} style={{ flex: 1 }}>
       <Animated.View style={[styles.actionBtn, isLast && styles.lastActionBtn, s]}>
-        <Text style={styles.actionLabel}>{label}</Text>
+        <Text style={styles.actionLabel} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{label}</Text>
       </Animated.View>
     </TouchableOpacity>
   );
@@ -599,21 +663,30 @@ const styles = StyleSheet.create({
   headerTitle: { fontFamily: 'Amiri', color: theme.primary, fontSize: 24 },
   content: { flex: 1, padding: 8 },
   floatingBar: {
-    position: 'absolute', top: 20, alignSelf: 'center', zIndex: 100,
+    position: 'absolute', top: 20, left: 16, right: 16, alignSelf: 'center', zIndex: 100,
     flexDirection: 'row', alignItems: 'center', backgroundColor: theme.backgroundCard,
     borderRadius: 12, paddingVertical: 10, paddingHorizontal: 16,
     borderWidth: 1, borderColor: theme.cardBorder, elevation: 8,
     shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.5, shadowRadius: 8,
   },
-  floatingBarPrefix: { color: theme.white, fontSize: 13, marginRight: 8, fontFamily: 'Amiri' },
+  floatingBarPrefix: { color: theme.white, fontSize: 13, marginRight: 8, fontFamily: 'Amiri', flexShrink: 1 },
   floatingBarBtn: { backgroundColor: 'rgba(46,204,113,0.15)', paddingHorizontal: 12, paddingVertical: 4, borderRadius: 6 },
   floatingBarText: { color: theme.secondary, fontSize: 13, fontWeight: 'bold' },
   floatingBarDismiss: { color: theme.grey, fontSize: 16, padding: 4, marginLeft: 12 },
   ayahCard: { position: 'relative', borderRadius: 24, borderWidth: 1, borderColor: theme.cardBorder, padding: 16 },
+  audioBtn: {
+    position: 'absolute', top: 16, left: 16, zIndex: 20,
+    width: 38, height: 38, borderRadius: 19,
+    borderWidth: 1.5, borderColor: theme.primary,
+    justifyContent: 'center', alignItems: 'center',
+    backgroundColor: 'rgba(0,255,135,0.06)',
+  },
+  audioBtnPlaying: { backgroundColor: 'rgba(0,255,135,0.18)' },
+  audioIcon: { color: theme.primary, fontSize: 15 },
   goldLine: { height: 1, backgroundColor: theme.primaryGlow, marginBottom: 24, marginHorizontal: -16 },
   arabicTextContainer: {
     flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center',
-    alignItems: 'flex-end', direction: 'rtl',
+    alignItems: 'flex-end',
     paddingHorizontal: 4, paddingTop: 16, paddingBottom: 8,
   },
   wordWrap: { paddingHorizontal: 0, paddingTop: 0, paddingBottom: 0, borderRadius: 6, marginHorizontal: 0, marginVertical: 0 },

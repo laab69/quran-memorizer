@@ -1,4 +1,3 @@
-import { BlurView } from 'expo-blur';
 import { useState } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import Animated, {
@@ -52,25 +51,18 @@ export default function BlurredAyah({ ayah }) {
         </Text>
         
         {!revealed && (
-          <Animated.View style={[styles.blurWrapper, blurStyle]} pointerEvents="none">
-            <BlurView 
-              tint="dark" 
-              intensity={100} 
-              experimentalBlurMethod="dimezisBlurView"
-              style={StyleSheet.absoluteFill} 
-            />
-          </Animated.View>
+          <Animated.View style={[styles.blurWrapper, blurStyle]} pointerEvents="none" />
         )}
       </TouchableOpacity>
 
       <View style={styles.verseKeyRow}>
         {ayah.surah_number && getSurahNameGlyph(ayah.surah_number) && (
-          <Text style={styles.surahGlyph}>
+          <Text style={styles.surahGlyph} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.5}>
             {getSurahNameGlyph(ayah.surah_number)}
           </Text>
         )}
       </View>
-      <Text style={styles.translation}>{ayah.translation || ''}</Text>
+      <Text style={styles.translation} numberOfLines={4}>{ayah.translation || ''}</Text>
     </View>
   );
 }
@@ -98,13 +90,12 @@ const styles = StyleSheet.create({
     color: theme.white,
     lineHeight: 58,
     textAlign: 'center',
-    direction: 'rtl',
   },
   blurWrapper: {
     ...StyleSheet.absoluteFillObject,
     zIndex: 10,
     elevation: 5,
-    backgroundColor: 'rgba(8, 8, 16, 0.75)',
+    backgroundColor: '#0d0d1a',
   },
   verseKeyRow: {
     flexDirection: 'row',

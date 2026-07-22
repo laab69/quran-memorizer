@@ -1,10 +1,11 @@
-import React, { useEffect } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   TouchableOpacity,
-  ScrollView,
+  FlatList,
   SafeAreaView,
   StatusBar,
   Dimensions,
@@ -18,6 +19,7 @@ import Animated, {
   withSequence,
   Easing
 } from 'react-native-reanimated';
+import { getOverdueVerseIds } from '../db/queries';
 import { useAppStore } from '../store/AppStore';
 import theme from '../theme';
 
@@ -53,6 +55,20 @@ function ActiveBadgeOuter() {
 
 export default function LevelMapScreen({ navigation }) {
   const { activeSession, clearSession } = useAppStore();
+  const [overdueSet, setOverdueSet] = useState(() => new Set());
+
+  // Refresh which verses are due for review every time this screen gains
+  // focus (e.g. after finishing a review session), so the "due" badges on
+  // completed levels stay accurate without needing to remount the screen.
+  useFocusEffect(
+    useCallback(() => {
+      let isActive = true;
+      getOverdueVerseIds().then(ids => {
+        if (isActive) setOverdueSet(new Set(ids));
+      });
+      return () => { isActive = false; };
+    }, [])
+  );
 
   if (!activeSession) {
     return (
@@ -122,6 +138,116 @@ export default function LevelMapScreen({ navigation }) {
     return `${quarterLabel} - الحزب ${hizb}`;
   };
 
+  const renderLevelItem = ({ item: level, index }) => {
+    const isCompleted = completed_level_indices.includes(index);
+    const isActive = index === current_level_index;
+    const isUnlocked = index <= current_level_index || isCompleted;
+    // Only completed levels need a "come back and review" prompt -- the
+    // active level already surfaces its own overdue verses automatically.
+    const hasDueReview = isCompleted && level.verseIds && level.verseIds.some(id => overdueSet.has(id));
+
+    // Connecting line colors
+    const showTopLine = index > 0;
+    const showBottomLine = index < totalLevels - 1;
+    const isTopLineGreen = index <= current_level_index;
+    const isBottomLineGreen = index < current_level_index;
+
+    return (
+      <View style={styles.levelRow}>
+        {/* Visual Connector Path Area */}
+        <View style={styles.badgeColumn}>
+          {showTopLine && (
+            <View
+              style={[
+                styles.connectorLine,
+                styles.connectorLineTop,
+                isTopLineGreen && styles.connectorLineGreen
+              ]}
+            />
+          )}
+          {showBottomLine && (
+            <View
+              style={[
+                styles.connectorLine,
+                styles.connectorLineBottom,
+                isBottomLineGreen && styles.connectorLineGreen
+              ]}
+            />
+          )}
+
+          {/* Circular Node */}
+          <TouchableOpacity
+            activeOpacity={0.8}
+            onPress={() => handleStartLevel(index, level)}
+            style={[
+              styles.nodeOuter,
+              isCompleted && styles.nodeCompleted,
+              isActive && styles.nodeActive,
+              !isUnlocked && styles.nodeLocked
+            ]}
+          >
+            {isActive && <ActiveBadgeOuter />}
+            <View
+              style={[
+                styles.nodeInner,
+                isCompleted && styles.nodeInnerCompleted,
+                isActive && styles.nodeInnerActive,
+                !isUnlocked && styles.nodeInnerLocked
+              ]}
+            >
+              {isCompleted ? (
+                <Text style={styles.checkIcon}>✓</Text>
+              ) : !isUnlocked ? (
+                <Text style={styles.lockIcon}>🔒</Text>
+              ) : (
+                <Text style={styles.levelNumberText}>{index + 1}</Text>
+              )}
+            </View>
+            {hasDueReview && (
+              <View style={styles.dueBadge}>
+                <Text style={styles.dueBadgeIcon}>🔔</Text>
+              </View>
+            )}
+          </TouchableOpacity>
+        </View>
+
+        {/* Level Details Card Area */}
+        <TouchableOpacity
+          activeOpacity={0.8}
+          onPress={() => handleStartLevel(index, level)}
+          style={[
+            styles.levelCard,
+            isActive && styles.levelCardActive,
+            !isUnlocked && styles.levelCardLocked
+          ]}
+        >
+          <View style={styles.cardHeader}>
+            <Text style={[styles.levelCardTitle, isUnlocked && styles.textWhite]} numberOfLines={1}>
+              المستوى {index + 1}
+            </Text>
+            <Text style={styles.hizbLabel} numberOfLines={1}>{getHizbLabel(level.rub_number)}</Text>
+          </View>
+
+          <Text style={styles.verseRangeText} numberOfLines={1}>
+            الآيات: {level.first_verse_key} إلى {level.last_verse_key}
+          </Text>
+
+          {level.text_uthmani && (
+            <Text
+              style={[
+                styles.ayahPreviewText,
+                !isUnlocked && styles.textMuted
+              ]}
+              numberOfLines={1}
+            >
+              {level.text_uthmani.split(' ').slice(0, 5).join(' ')} ...
+            </Text>
+          )}
+        </TouchableOpacity>
+      </View>
+    );
+  };
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <StatusBar barStyle="light-content" backgroundColor="#050A07" />
@@ -129,132 +255,33 @@ export default function LevelMapScreen({ navigation }) {
         <TouchableOpacity onPress={() => navigation.navigate('Dashboard')} style={styles.backBtn}>
           <Text style={styles.backText}>{"\u2039"}</Text>
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>خريطة المستويات</Text>
+        <Text style={styles.headerTitle} numberOfLines={1}>خريطة المستويات</Text>
         <TouchableOpacity onPress={handleResetSession} style={styles.resetBtn}>
-          <Text style={styles.resetBtnText}>إعادة تعيين</Text>
+          <Text style={styles.resetBtnText} numberOfLines={1}>إعادة تعيين</Text>
         </TouchableOpacity>
       </View>
 
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContainer}>
-        {/* Progress Dashboard Card */}
-        <View style={styles.dashboardCard}>
-          <Text style={styles.dashboardTitle}>مسار التحدي العشوائي</Text>
-          <View style={styles.progressRow}>
-            <Text style={styles.progressText}>
-              المستوى {Math.min(current_level_index + 1, totalLevels)} من {totalLevels}
-            </Text>
-            <Text style={styles.percentText}>{Math.round(progressPercent)}% مكتمل</Text>
+      <FlatList
+        data={levels_data}
+        keyExtractor={(_, index) => index.toString()}
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={styles.scrollContainer}
+        renderItem={renderLevelItem}
+        ListHeaderComponent={
+          <View style={styles.dashboardCard}>
+            <Text style={styles.dashboardTitle} numberOfLines={1}>مسار التحدي العشوائي</Text>
+            <View style={styles.progressRow}>
+              <Text style={[styles.progressText, { flexShrink: 1 }]} numberOfLines={1}>
+                المستوى {Math.min(current_level_index + 1, totalLevels)} من {totalLevels}
+              </Text>
+              <Text style={styles.percentText} numberOfLines={1}>{Math.round(progressPercent)}% مكتمل</Text>
+            </View>
+            <View style={styles.progressBarBg}>
+              <View style={[styles.progressBarFill, { width: `${progressPercent}%` }]} />
+            </View>
           </View>
-          <View style={styles.progressBarBg}>
-            <View style={[styles.progressBarFill, { width: `${progressPercent}%` }]} />
-          </View>
-        </View>
-
-        {/* Level Path Timeline */}
-        <View style={styles.timelineContainer}>
-          {levels_data.map((level, index) => {
-            const isCompleted = completed_level_indices.includes(index);
-            const isActive = index === current_level_index;
-            const isUnlocked = index <= current_level_index || isCompleted;
-
-            // Connecting line colors
-            const showTopLine = index > 0;
-            const showBottomLine = index < totalLevels - 1;
-            const isTopLineGreen = index <= current_level_index;
-            const isBottomLineGreen = index < current_level_index;
-
-            return (
-              <View key={index} style={styles.levelRow}>
-                {/* Visual Connector Path Area */}
-                <View style={styles.badgeColumn}>
-                  {showTopLine && (
-                    <View
-                      style={[
-                        styles.connectorLine,
-                        styles.connectorLineTop,
-                        isTopLineGreen && styles.connectorLineGreen
-                      ]}
-                    />
-                  )}
-                  {showBottomLine && (
-                    <View
-                      style={[
-                        styles.connectorLine,
-                        styles.connectorLineBottom,
-                        isBottomLineGreen && styles.connectorLineGreen
-                      ]}
-                    />
-                  )}
-
-                  {/* Circular Node */}
-                  <TouchableOpacity
-                    activeOpacity={0.8}
-                    onPress={() => handleStartLevel(index, level)}
-                    style={[
-                      styles.nodeOuter,
-                      isCompleted && styles.nodeCompleted,
-                      isActive && styles.nodeActive,
-                      !isUnlocked && styles.nodeLocked
-                    ]}
-                  >
-                    {isActive && <ActiveBadgeOuter />}
-                    <View
-                      style={[
-                        styles.nodeInner,
-                        isCompleted && styles.nodeInnerCompleted,
-                        isActive && styles.nodeInnerActive,
-                        !isUnlocked && styles.nodeInnerLocked
-                      ]}
-                    >
-                      {isCompleted ? (
-                        <Text style={styles.checkIcon}>✓</Text>
-                      ) : !isUnlocked ? (
-                        <Text style={styles.lockIcon}>🔒</Text>
-                      ) : (
-                        <Text style={styles.levelNumberText}>{index + 1}</Text>
-                      )}
-                    </View>
-                  </TouchableOpacity>
-                </View>
-
-                {/* Level Details Card Area */}
-                <TouchableOpacity
-                  activeOpacity={0.8}
-                  onPress={() => handleStartLevel(index, level)}
-                  style={[
-                    styles.levelCard,
-                    isActive && styles.levelCardActive,
-                    !isUnlocked && styles.levelCardLocked
-                  ]}
-                >
-                  <View style={styles.cardHeader}>
-                    <Text style={[styles.levelCardTitle, isUnlocked && styles.textWhite]}>
-                      المستوى {index + 1}
-                    </Text>
-                    <Text style={styles.hizbLabel}>{getHizbLabel(level.rub_number)}</Text>
-                  </View>
-
-                  <Text style={styles.verseRangeText}>
-                    الآيات: {level.first_verse_key} إلى {level.last_verse_key}
-                  </Text>
-
-                  {level.text_uthmani && (
-                    <Text
-                      style={[
-                        styles.ayahPreviewText,
-                        !isUnlocked && styles.textMuted
-                      ]}
-                      numberOfLines={1}
-                    >
-                      {level.text_uthmani.split(' ').slice(0, 5).join(' ')} ...
-                    </Text>
-                  )}
-                </TouchableOpacity>
-              </View>
-            );
-          })}
-        </View>
-      </ScrollView>
+        }
+      />
     </SafeAreaView>
   );
 }
@@ -334,6 +361,14 @@ const styles = StyleSheet.create({
   nodeCompleted: { borderWidth: 2, borderColor: theme.primary, backgroundColor: 'rgba(0, 255, 135, 0.1)' },
   nodeActive: { borderWidth: 2, borderColor: theme.primary, backgroundColor: theme.background },
   nodeLocked: { borderWidth: 2, borderColor: theme.cardBorder, backgroundColor: theme.backgroundCard },
+  dueBadge: {
+    position: 'absolute', top: -4, right: -4, zIndex: 3,
+    width: 20, height: 20, borderRadius: 10,
+    backgroundColor: theme.background,
+    borderWidth: 1.5, borderColor: theme.error,
+    justifyContent: 'center', alignItems: 'center',
+  },
+  dueBadgeIcon: { fontSize: 10 },
 
   pulseOuter: {
     position: 'absolute',
@@ -378,7 +413,7 @@ const styles = StyleSheet.create({
   cardHeader: { flexDirection: 'row-reverse', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 },
   levelCardTitle: { fontSize: 15, fontWeight: 'bold', color: theme.greyLight, textAlign: 'right' },
   textWhite: { color: theme.white },
-  hizbLabel: { fontSize: 11, color: theme.primary, fontWeight: '500' },
+  hizbLabel: { fontSize: 11, color: theme.primary, fontWeight: '500', flexShrink: 1, marginLeft: 8 },
   
   verseRangeText: { color: theme.greyLight, fontSize: 12, textAlign: 'right', marginBottom: 6 },
   ayahPreviewText: { fontFamily: 'Amiri', color: theme.white, fontSize: 14, textAlign: 'right', marginTop: 4 },

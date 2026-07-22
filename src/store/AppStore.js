@@ -1,13 +1,15 @@
 import { createContext, useContext, useRef, useState } from 'react';
-import { 
-  getAllSurahs, 
-  getAllVerseIndex, 
-  getMemorizedVerseIds, 
+import {
+  getAllSurahs,
+  getAllVerseIndex,
+  getMemorizedVerseIds,
   resetMemorizedVerses,
   getActiveSession,
   saveActiveSession,
   updateActiveSessionProgress,
-  clearActiveSession
+  clearActiveSession,
+  markAsMemorized,
+  markAsNotMemorized
 } from '../db/queries';
 
 const AppStore = createContext(null);
@@ -33,6 +35,7 @@ export function AppStoreProvider({ children }) {
 
   const [ready, setReady] = useState(false);
   const [activeSession, setActiveSession] = useState(null);
+  const [memorizedVersion, setMemorizedVersion] = useState(0);
 
   async function initStore() {
     const s = store.current;
@@ -73,6 +76,19 @@ export function AppStoreProvider({ children }) {
     setReady(r => !r); // force re-render
   }
 
+  async function toggleMemorized(verseId, verseKey, value) {
+    if (value) {
+      await markAsMemorized(verseId, verseKey);
+      store.current.memorizedSet.add(verseId);
+    } else {
+      await markAsNotMemorized(verseId);
+      store.current.memorizedSet.delete(verseId);
+    }
+    // memorizedSet is mutated in place, so bump a counter to notify
+    // every screen reading it (progress bars, strength meters, etc.)
+    setMemorizedVersion(v => v + 1);
+  }
+
   async function saveSession(start, end, levels) {
     await saveActiveSession(start, end, levels);
     const session = await getActiveSession();
@@ -97,15 +113,17 @@ export function AppStoreProvider({ children }) {
   }
 
   return (
-    <AppStore.Provider value={{ 
-      store: store.current, 
-      initStore, 
-      resetStore, 
-      ready, 
-      activeSession, 
-      saveSession, 
-      updateSessionProgress, 
-      clearSession 
+    <AppStore.Provider value={{
+      store: store.current,
+      initStore,
+      resetStore,
+      ready,
+      activeSession,
+      saveSession,
+      updateSessionProgress,
+      clearSession,
+      memorizedVersion,
+      toggleMemorized
     }}>
       {children}
     </AppStore.Provider>

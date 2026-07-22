@@ -63,7 +63,6 @@ const styles = StyleSheet.create({
     width: '100%',
     overflow: 'hidden',
     position: 'relative',
-    direction: 'ltr', // Prevents Arabic layout from flipping the math
   },
   segment: {
     position: 'absolute',
